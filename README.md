@@ -29,6 +29,15 @@ Además se debe instalar la herramienta remote-viewer, dependiendo del SO
 
 `sudo zypper install virt-viewer`
 
+### Configuración de Permisos en Proxmox
+
+Para que el script funcione correctamente, es necesario configurar los permisos adecuados en Proxmox VE. Consulta la guía detallada en [PERMISOS_PROXMOX.md](PERMISOS_PROXMOX.md) para:
+
+- Crear un usuario dedicado para el script
+- Configurar los permisos mínimos necesarios
+- Elegir el ámbito de acceso apropiado (datacenter, nodo o VMs específicas)
+
+
 ## Funcionamiento
 
 Existen diferentes formas de ejecutar el script:
@@ -103,7 +112,7 @@ Este script fue inspirado por [este script](https://git.proxmox.com/?p=pve-manag
 
 ## Proximos pasos (AKA Roadmap)
 
-- [ ] Buscar los permisos necesarios para crear un usuario en proxmox
+- [X] Buscar los permisos necesarios para crear un usuario en proxmox
 - [X] Mostrar un listado de las vms del nodo
 - [X] Ejecutar consola por nombre de vm o por id
 - [ ] Añadir soporte a consola NoVNC
