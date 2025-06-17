@@ -19,10 +19,10 @@ load_config() {
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
         
-        # Asignar valores de configuración si existen
-        DEFAULT_HOST="${DEFAULT_HOST:-$PROXMOX_HOST}"
-        DEFAULT_PORT="${DEFAULT_PORT:-$PROXMOX_PORT}"
-        DEFAULT_USERNAME="${DEFAULT_USERNAME:-$PROXMOX_USER}"
+        # Asignar valores de configuración si existen (los valores del archivo tienen prioridad)
+        DEFAULT_HOST="${PROXMOX_HOST:-$DEFAULT_HOST}"
+        DEFAULT_PORT="${PROXMOX_PORT:-$DEFAULT_PORT}"
+        DEFAULT_USERNAME="${PROXMOX_USER:-$DEFAULT_USERNAME}"
         DEFAULT_PROXY="${PROXMOX_PROXY:-$DEFAULT_PROXY}"
     fi
 }
@@ -157,16 +157,26 @@ get_spice_config() {
 # Cargar configuración si existe
 load_config
 
-# Inicialización de variables principales
+# ============================================================================
+# INICIALIZACIÓN DE VARIABLES
+# ============================================================================
+
+# Variables de autenticación
 USERNAME="$DEFAULT_USERNAME"
-VMID="$1"
-HOST="${2:-$DEFAULT_HOST}"
-PROXY="${3:-${DEFAULT_PROXY:-$HOST}}"
-HOST="${HOST%%\.*}"
+PASSWORD=""
+AUTH_DATA=""
+TICKET=""
+CSRF=""
 
+# Variables de conexión (se configurarán después de procesar argumentos)
+VMID=""
+HOST=""
+PROXY=""
 
+# ============================================================================
+# PROCESAMIENTO DE ARGUMENTOS DE LÍNEA DE COMANDOS
+# ============================================================================
 
-# Procesar argumentos
 while getopts ":u:h" opt; do
     case $opt in
         u)
@@ -184,19 +194,40 @@ done
 
 shift $((OPTIND-1))
 
-# Validar argumentos
+# ============================================================================
+# CONFIGURACIÓN INICIAL DE VARIABLES DE CONEXIÓN
+# ============================================================================
+
+# Configurar variables de conexión después de procesar argumentos
+VMID="$1"
+HOST="${2:-$DEFAULT_HOST}"
+TEMP_PROXY="${3:-$DEFAULT_PROXY}"
+PROXY="${TEMP_PROXY:-$HOST}"
+# Limpiar el nombre del host (quitar dominio)
+HOST="${HOST%%\.*}"
+
+# ============================================================================
+# VALIDACIÓN DE ARGUMENTOS Y SELECCIÓN DE VM
+# ============================================================================
+
+# Validar argumentos y obtener VMID
 if [[ -z "$1" ]]; then
     echo "No se especificó un ID de VM. Mostrando VMs compatibles con SPICE:"
+    
+    # Obtener credenciales para mostrar lista
     PASSWORD=$(get_password "$USERNAME")
     echo "Autenticando..."
     AUTH_DATA=$(get_auth_ticket "$USERNAME" "$PASSWORD" "$PROXY" "$DEFAULT_PORT")
     TICKET=$(parse_auth_data "$AUTH_DATA" "ticket")
     CSRF=$(parse_auth_data "$AUTH_DATA" "csrf")
+    
     if [[ -z "$TICKET" || -z "$CSRF" ]]; then
         echo "Error: Fallo en la autenticación" >&2
         exit 1
     fi
     echo "Autenticación exitosa"
+    
+    # Mostrar lista de VMs compatibles
     filter_spice_vms "$TICKET" "$CSRF" "$PROXY" "$HOST" "$DEFAULT_PORT"
     
     # Solicitar al usuario que elija una VM
@@ -214,27 +245,48 @@ if [[ -z "$1" ]]; then
         exit 1
     fi
     
-    # Asignar el ID seleccionado y continuar con la conexión
+    # Asignar el ID seleccionado
     VMID="$selected_vmid"
     echo "Conectando a la VM $VMID..."
 else
+    # Usar el VMID proporcionado como argumento
     VMID="$1"
+    # Limpiar variables de autenticación para forzar nueva autenticación si es necesario
+    PASSWORD=""
+    AUTH_DATA=""
+    TICKET=""
+    CSRF=""
 fi
 
-# Configurar variables
-HOST="${DEFAULT_HOST:-$2}"
-# Si se especificó un proxy en línea de comandos, úsalo
-# Si no, usa PROXMOX_PROXY del archivo de configuración
-# Si tampoco existe, usa el HOST
-PROXY="${3:-${DEFAULT_PROXY:-$HOST}}"
+# ============================================================================
+# CONFIGURACIÓN FINAL DE VARIABLES DE CONEXIÓN
+# ============================================================================
+
+# Asegurar que tenemos todas las variables necesarias para la conexión
+# Reconfigurar variables de conexión basadas en argumentos finales
+if [[ -n "$2" ]]; then
+    HOST="$2"
+fi
+if [[ -n "$3" ]]; then
+    PROXY="$3"
+else
+    # Si no se especificó proxy, usar el configurado o el host
+    PROXY="${DEFAULT_PROXY:-$HOST}"
+fi
+
+# Limpiar el nombre del host (quitar dominio) después de configurar proxy
 HOST="${HOST%%\.*}"
 
-# Obtener contraseña de forma segura (solo si no se obtuvo antes)
+# ============================================================================
+# AUTENTICACIÓN FINAL
+# ============================================================================
+
+# Obtener credenciales si no las tenemos ya
 if [[ -z "$PASSWORD" ]]; then
     PASSWORD=$(get_password "$USERNAME")
 fi
 
-# Obtener y procesar la autenticación (solo si no se obtuvo antes)
+# Autenticar si no tenemos ticket válido
 if [[ -z "$TICKET" || -z "$CSRF" ]]; then
     echo "Autenticando..."
     AUTH_DATA=$(get_auth_ticket "$USERNAME" "$PASSWORD" "$PROXY" "$DEFAULT_PORT")
@@ -248,7 +300,10 @@ if [[ -z "$TICKET" || -z "$CSRF" ]]; then
     echo "Autenticación exitosa"
 fi
 
-# Obtener configuración SPICE y conectar
+# ============================================================================
+# CONEXIÓN SPICE
+# ============================================================================
+
 echo "Obteniendo configuración SPICE..."
 get_spice_config "$TICKET" "$CSRF" "$PROXY" "$HOST" "$VMID" "$DEFAULT_PORT"
 
