@@ -72,6 +72,52 @@ get_auth_ticket() {
     echo "$data"
 }
 
+# Función para obtener el listado de todas las vms del nodo (id y nombre)
+get_full_list_of_vms(){
+    local ticket="$1"
+    local csrf="$2"
+    local proxy="$3"
+    local host="$4"
+    local port="$5"
+    curl -f -s -S -k \
+        -b "PVEAuthCookie=$ticket" \
+        -H "CSRFPreventionToken: $csrf" \
+        "https://$proxy:$port/api2/json/nodes/$host/qemu/" | \
+        grep -o '{[^}]*}' | while read -r vm; do
+            vmid=$(echo "$vm" | grep -o '"vmid":[0-9]*' | grep -o '[0-9]*')
+            name=$(echo "$vm" | grep -o '"name":"[^"]*"' | sed 's/"name":"\(.*\)"/\1/')
+            if [[ -n "$vmid" ]]; then
+                echo "$vmid $name"
+            fi
+        done
+}
+
+# Función para filtrar e imprimir solo las VMs que soportan SPICE (id y nombre)
+filter_spice_vms(){
+    set +e  # Deshabilitar set -e temporalmente
+    local ticket="$1"
+    local csrf="$2"
+    local proxy="$3"
+    local host="$4"
+    local port="$5"
+    local vms_list
+    vms_list=$(get_full_list_of_vms "$ticket" "$csrf" "$proxy" "$host" "$port")
+    while IFS= read -r line; do
+        vmid=$(echo "$line" | awk '{print $1}')
+        name=$(echo "$line" | cut -d' ' -f2-)
+        # Consultar la configuración de la VM
+        config=$(curl -f -s -S -k \
+            -b "PVEAuthCookie=$ticket" \
+            -H "CSRFPreventionToken: $csrf" \
+            "https://$proxy:$port/api2/json/nodes/$host/qemu/$vmid/config")
+        spice_enabled=$(echo "$config" | grep -oE '"vga":"[^"]*"' | grep -E '.*(qxl[0-9]*|virtio|virtio-gl).*')
+        if [[ -n "$spice_enabled" ]]; then
+            echo "ID: $vmid | Nombre: $name"
+        fi
+    done <<< "$vms_list"
+    set -e  # Rehabilitar set -e
+}
+
 # Función para extraer el ticket y token CSRF
 parse_auth_data() {
     local data="$1"
@@ -111,9 +157,16 @@ get_spice_config() {
 # Cargar configuración si existe
 load_config
 
-# Procesar argumentos
+# Inicialización de variables principales
 USERNAME="$DEFAULT_USERNAME"
+VMID="$1"
+HOST="${2:-$DEFAULT_HOST}"
+PROXY="${3:-${DEFAULT_PROXY:-$HOST}}"
+HOST="${HOST%%\.*}"
 
+
+
+# Procesar argumentos
 while getopts ":u:h" opt; do
     case $opt in
         u)
@@ -133,12 +186,42 @@ shift $((OPTIND-1))
 
 # Validar argumentos
 if [[ -z "$1" ]]; then
-    echo "Error: Debe especificar el ID de la VM" >&2
-    show_usage
+    echo "No se especificó un ID de VM. Mostrando VMs compatibles con SPICE:"
+    PASSWORD=$(get_password "$USERNAME")
+    echo "Autenticando..."
+    AUTH_DATA=$(get_auth_ticket "$USERNAME" "$PASSWORD" "$PROXY" "$DEFAULT_PORT")
+    TICKET=$(parse_auth_data "$AUTH_DATA" "ticket")
+    CSRF=$(parse_auth_data "$AUTH_DATA" "csrf")
+    if [[ -z "$TICKET" || -z "$CSRF" ]]; then
+        echo "Error: Fallo en la autenticación" >&2
+        exit 1
+    fi
+    echo "Autenticación exitosa"
+    filter_spice_vms "$TICKET" "$CSRF" "$PROXY" "$HOST" "$DEFAULT_PORT"
+    
+    # Solicitar al usuario que elija una VM
+    echo
+    read -p "Ingrese el ID de la VM a la que desea conectar (o presione Enter para salir): " selected_vmid
+    
+    if [[ -z "$selected_vmid" ]]; then
+        echo "Operación cancelada."
+        exit 0
+    fi
+    
+    # Validar que el ID sea numérico
+    if ! [[ "$selected_vmid" =~ ^[0-9]+$ ]]; then
+        echo "Error: El ID de la VM debe ser un número." >&2
+        exit 1
+    fi
+    
+    # Asignar el ID seleccionado y continuar con la conexión
+    VMID="$selected_vmid"
+    echo "Conectando a la VM $VMID..."
+else
+    VMID="$1"
 fi
 
 # Configurar variables
-VMID="$1"
 HOST="${DEFAULT_HOST:-$2}"
 # Si se especificó un proxy en línea de comandos, úsalo
 # Si no, usa PROXMOX_PROXY del archivo de configuración
@@ -146,21 +229,24 @@ HOST="${DEFAULT_HOST:-$2}"
 PROXY="${3:-${DEFAULT_PROXY:-$HOST}}"
 HOST="${HOST%%\.*}"
 
-# Obtener contraseña de forma segura
-PASSWORD=$(get_password "$USERNAME")
-
-# Obtener y procesar la autenticación
-echo "Autenticando..."
-AUTH_DATA=$(get_auth_ticket "$USERNAME" "$PASSWORD" "$PROXY" "$DEFAULT_PORT")
-TICKET=$(parse_auth_data "$AUTH_DATA" "ticket")
-CSRF=$(parse_auth_data "$AUTH_DATA" "csrf")
-
-if [[ -z "$TICKET" || -z "$CSRF" ]]; then
-    echo "Error: Fallo en la autenticación" >&2
-    exit 1
+# Obtener contraseña de forma segura (solo si no se obtuvo antes)
+if [[ -z "$PASSWORD" ]]; then
+    PASSWORD=$(get_password "$USERNAME")
 fi
 
-echo "Autenticación exitosa"
+# Obtener y procesar la autenticación (solo si no se obtuvo antes)
+if [[ -z "$TICKET" || -z "$CSRF" ]]; then
+    echo "Autenticando..."
+    AUTH_DATA=$(get_auth_ticket "$USERNAME" "$PASSWORD" "$PROXY" "$DEFAULT_PORT")
+    TICKET=$(parse_auth_data "$AUTH_DATA" "ticket")
+    CSRF=$(parse_auth_data "$AUTH_DATA" "csrf")
+
+    if [[ -z "$TICKET" || -z "$CSRF" ]]; then
+        echo "Error: Fallo en la autenticación" >&2
+        exit 1
+    fi
+    echo "Autenticación exitosa"
+fi
 
 # Obtener configuración SPICE y conectar
 echo "Obteniendo configuración SPICE..."
